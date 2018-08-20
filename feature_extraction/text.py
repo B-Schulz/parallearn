@@ -1,22 +1,16 @@
-from sklearn.feature_extraction.text import CountVectorizer as CountVectorizer_non_parallel
-
-from sklearn.feature_extraction.text import six, numbers, np, defaultdict, _make_int_array, sp
-from datetime import datetime
+import sklearn.feature_extraction.text
+from sklearn.feature_extraction.text import six, numbers, np, defaultdict, _make_int_array, sp, check_is_fitted
 import math
 from multiprocessing import Pool
 
-def timeit(msg, t):
-    new_t = datetime.now()
-    print('{} -- {}'.format(new_t-t, msg))
-    return new_t
 
-
-class CountVectorizer(CountVectorizer_non_parallel):
-    def _vocab_worker(self, worker_number, raw_documents):
-        global VOCABULARY
-
-        vocabulary = defaultdict()
-        vocabulary.default_factory = vocabulary.__len__
+class CountVectorizer(sklearn.feature_extraction.text.CountVectorizer):
+    def _vocab_worker(self, worker_number, raw_documents, fixed_vocab):
+        if fixed_vocab:
+            vocabulary = self.vocabulary_
+        else:
+            vocabulary = defaultdict()
+            vocabulary.default_factory = vocabulary.__len__
 
         analyze = self.build_analyzer()
         j_indices = []
@@ -27,19 +21,29 @@ class CountVectorizer(CountVectorizer_non_parallel):
         for doc in raw_documents:
             feature_counter = {}
             for feature in analyze(doc):
+                try:
+                    feature_idx = vocabulary[feature]
+                    if feature_idx not in feature_counter:
+                        feature_counter[feature_idx] = 1
+                    else:
+                        feature_counter[feature_idx] += 1
+                except KeyError:
+                    # Ignore out-of-vocabulary items for fixed_vocab=True
+                    continue
 
-                feature_idx = vocabulary[feature]
-
-                if feature_idx not in feature_counter:
-                    feature_counter[feature_idx] = 1
-                else:
-                    feature_counter[feature_idx] += 1
-        #
             j_indices.extend(feature_counter.keys())
             values.extend(feature_counter.values())
             indptr.append(len(j_indices))
 
+        if not fixed_vocab:
+            # disable defaultdict behaviour
+            vocabulary = dict(vocabulary)
+            if not vocabulary:
+                raise ValueError("empty vocabulary; perhaps the documents only"
+                                 " contain stop words")
+
         return {'worker_number': worker_number,
+                'fixed_vocab': fixed_vocab,
                 'vocabulary': dict(vocabulary),
                 'j_indices': j_indices,
                 'values': values,
@@ -47,15 +51,15 @@ class CountVectorizer(CountVectorizer_non_parallel):
 
             # print('worker {} worked on doc {}'.format(worker_number, ix))
 
-    def _count_vocab_parallel(self, raw_documents, fixed_vocab, n_jobs=1):
+
+    def _count_vocab(self, raw_documents, fixed_vocab, n_jobs=1):
         with Pool(processes=n_jobs) as p:
-            # p.apply_async(self._queue_documents, args=(raw_documents,))
             results = []
             job_size = math.ceil(len(raw_documents)/n_jobs)
 
             for i in range(n_jobs):
                 results.append(p.apply_async(self._vocab_worker,
-                                             args=(i, raw_documents[i*job_size:(i+1)*job_size])))
+                                             args=(i, raw_documents[i*job_size:(i+1)*job_size], fixed_vocab)))
             p.close()
             p.join()
 
@@ -64,35 +68,38 @@ class CountVectorizer(CountVectorizer_non_parallel):
             j_indices = np.asarray(j_indices, dtype=np.intc)
             indptr = np.frombuffer(indptr, dtype=np.intc)
             values = np.frombuffer(values, dtype=np.intc)
-            # vocabulary = dict(VOCABULARY)
+
 
             X = sp.csr_matrix((values, j_indices, indptr),
                               shape=(len(indptr) - 1, len(vocabulary)),
                               dtype=self.dtype)
             X.sort_indices()
             return vocabulary, X
-            #
-            # # print('worker_number: {}'.format(r['worker_number']))
-            # print('vocabulary: {}'.format(VOCABULARY))
-            # print('j_indices(#{}): {}'.format(len(j_indices), j_indices))
-            # print('values(#{}): {}'.format(len(values), values))
-            # print('indptr(#{}): {}'.format(len(indptr), indptr))
 
     def _join_results(self, *results):
+        fixed_vocab = results[0]['fixed_vocab']
+
         vocabulary = results[0]['vocabulary']
         j_indices = results[0]['j_indices']
         values = results[0]['values']
         indptr = results[0]['indptr']
 
         for result in results[1:]:
-            mapping = {}
-            for k, v in result['vocabulary'].items():
-                if k not in vocabulary:
-                    idx = len(vocabulary)
-                    vocabulary[k] = idx
-                mapping[v] = vocabulary[k]
 
-            j_indices.extend([mapping[x] for x in result['j_indices']])
+            # if subprocesses buit their own vocabularies,
+            # mapping between them must be calculated and applied
+
+            if not fixed_vocab:
+                mapping = {}
+                for k, v in result['vocabulary'].items():
+                    if k not in vocabulary:
+                        idx = len(vocabulary)
+                        vocabulary[k] = idx
+                    mapping[v] = vocabulary[k]
+                j_indices.extend([mapping[x] for x in result['j_indices']])
+            else:
+                j_indices.extend(result['j_indices'])
+
             values.extend(result['values'])
             try:
                 last_val = indptr[-1]
@@ -102,11 +109,11 @@ class CountVectorizer(CountVectorizer_non_parallel):
             indptr.extend([ptr+last_val for ptr in result['indptr'][1:]])
         return vocabulary, j_indices, values, indptr
 
-    def fit_transform_parallel(self, raw_documents, y=None, n_jobs=1):
-        """Learn the vocabulary dictionary and return term-document matrix.
+    def transform(self, raw_documents, n_jobs=1):
+        """Transform documents to document-term matrix.
 
-        This is equivalent to fit followed by transform, but more efficiently
-        implemented.
+        Extract token counts out of raw text documents using the vocabulary
+        fitted with fit or the one provided to the constructor.
 
         Parameters
         ----------
@@ -115,73 +122,31 @@ class CountVectorizer(CountVectorizer_non_parallel):
 
         Returns
         -------
-        X : array, [n_samples, n_features]
+        X : sparse matrix, [n_samples, n_features]
             Document-term matrix.
         """
-        # We intentionally don't call the transform method to make
-        # fit_transform overridable without unwanted side effects in
-        # TfidfVectorizer.
-        start = datetime.now()
-
-        t = timeit('Begin...', start)
-
         if isinstance(raw_documents, six.string_types):
             raise ValueError(
                 "Iterable over raw text documents expected, "
                 "string object received.")
 
-        self._validate_vocabulary()
-        max_df = self.max_df
-        min_df = self.min_df
-        max_features = self.max_features
-        t = timeit('Validate Vocab', t)
+        if not hasattr(self, 'vocabulary_'):
+            self._validate_vocabulary()
 
-        vocabulary, X = self._count_vocab_parallel(raw_documents,
-                                                    self.fixed_vocabulary_,
-                                                   n_jobs=n_jobs)
-        t = timeit('Count Vocab', t)
+        self._check_vocabulary()
+
+        # use the same matrix-building strategy as fit_transform
+        _, X = self._count_vocab(raw_documents, fixed_vocab=True, n_jobs=n_jobs)
 
         if self.binary:
             X.data.fill(1)
-        t = timeit('Check self.binary', t)
-
-        if not self.fixed_vocabulary_:
-            X = self._sort_features(X, vocabulary)
-            t = timeit('sort features', t)
-
-            n_doc = X.shape[0]
-            max_doc_count = (max_df
-                             if isinstance(max_df, numbers.Integral)
-                             else max_df * n_doc)
-            min_doc_count = (min_df
-                             if isinstance(min_df, numbers.Integral)
-                             else min_df * n_doc)
-            if max_doc_count < min_doc_count:
-                raise ValueError(
-                    "max_df corresponds to < documents than min_df")
-            t = timeit('Doc Counts', t)
-            X, self.stop_words_ = self._limit_features(X, vocabulary,
-                                                       max_doc_count,
-                                                       min_doc_count,
-                                                       max_features)
-            _ = timeit('limit features', t)
-            self.vocabulary_ = vocabulary
-        _ = timeit('Overall timing', start)
-
         return X
 
+    def fit(self, raw_documents, y=None, n_jobs=1):
+        self.fit_transform(raw_documents, n_jobs=n_jobs)
+        return self
 
-
-
-
-
-
-
-
-
-
-
-    def fit_transform(self, raw_documents, y=None):
+    def fit_transform(self, raw_documents, y=None, n_jobs=1):
         """Learn the vocabulary dictionary and return term-document matrix.
 
         This is equivalent to fit followed by transform, but more efficiently
@@ -200,9 +165,6 @@ class CountVectorizer(CountVectorizer_non_parallel):
         # We intentionally don't call the transform method to make
         # fit_transform overridable without unwanted side effects in
         # TfidfVectorizer.
-        start = datetime.now()
-
-        t = timeit('Begin...', start)
 
         if isinstance(raw_documents, six.string_types):
             raise ValueError(
@@ -213,19 +175,15 @@ class CountVectorizer(CountVectorizer_non_parallel):
         max_df = self.max_df
         min_df = self.min_df
         max_features = self.max_features
-        t = timeit('Validate Vocab', t)
 
         vocabulary, X = self._count_vocab(raw_documents,
-                                          self.fixed_vocabulary_)
-        t = timeit('Count Vocab', t)
-
+                                          self.fixed_vocabulary_,
+                                          n_jobs=n_jobs)
         if self.binary:
             X.data.fill(1)
-        t = timeit('Check self.binary', t)
 
         if not self.fixed_vocabulary_:
             X = self._sort_features(X, vocabulary)
-            t = timeit('sort features', t)
 
             n_doc = X.shape[0]
             max_doc_count = (max_df
@@ -237,13 +195,76 @@ class CountVectorizer(CountVectorizer_non_parallel):
             if max_doc_count < min_doc_count:
                 raise ValueError(
                     "max_df corresponds to < documents than min_df")
-            t = timeit('Doc Counts', t)
             X, self.stop_words_ = self._limit_features(X, vocabulary,
                                                        max_doc_count,
                                                        min_doc_count,
                                                        max_features)
-            _ = timeit('limit features', t)
             self.vocabulary_ = vocabulary
-        _ = timeit('Overall timing', start)
 
         return X
+
+
+class TfidfVectorizer(sklearn.feature_extraction.text.TfidfVectorizer, CountVectorizer):
+
+    def fit(self, raw_documents, y=None, n_jobs=1):
+        """Learn vocabulary and idf from training set.
+
+        Parameters
+        ----------
+        raw_documents : iterable
+            an iterable which yields either str, unicode or file objects
+
+        Returns
+        -------
+        self : TfidfVectorizer
+        """
+        X = CountVectorizer.fit_transform(self, raw_documents, n_jobs=n_jobs)
+        self._tfidf.fit(X)
+        return self
+
+    def fit_transform(self, raw_documents, y=None, n_jobs=1):
+        """Learn vocabulary and idf, return term-document matrix.
+
+        This is equivalent to fit followed by transform, but more efficiently
+        implemented.
+
+        Parameters
+        ----------
+        raw_documents : iterable
+            an iterable which yields either str, unicode or file objects
+
+        Returns
+        -------
+        X : sparse matrix, [n_samples, n_features]
+            Tf-idf-weighted document-term matrix.
+        """
+        X = CountVectorizer.fit_transform(self, raw_documents, n_jobs=n_jobs)
+        self._tfidf.fit(X)
+        # X is already a transformed view of raw_documents so
+        # we set copy to False
+        return self._tfidf.transform(X, copy=False)
+
+    def transform(self, raw_documents, copy=True, n_jobs=1):
+        """Transform documents to document-term matrix.
+
+        Uses the vocabulary and document frequencies (df) learned by fit (or
+        fit_transform).
+
+        Parameters
+        ----------
+        raw_documents : iterable
+            an iterable which yields either str, unicode or file objects
+
+        copy : boolean, default True
+            Whether to copy X and operate on the copy or perform in-place
+            operations.
+
+        Returns
+        -------
+        X : sparse matrix, [n_samples, n_features]
+            Tf-idf-weighted document-term matrix.
+        """
+        check_is_fitted(self, '_tfidf', 'The tfidf vector is not fitted')
+
+        X = CountVectorizer.transform(self, raw_documents, n_jobs=n_jobs)
+        return self._tfidf.transform(X, copy=False)
