@@ -49,9 +49,6 @@ class CountVectorizer(sklearn.feature_extraction.text.CountVectorizer):
                 'values': values,
                 'indptr': indptr}
 
-            # print('worker {} worked on doc {}'.format(worker_number, ix))
-
-
     def _count_vocab(self, raw_documents, fixed_vocab, n_jobs=1):
         with Pool(processes=n_jobs) as p:
             results = []
@@ -76,7 +73,8 @@ class CountVectorizer(sklearn.feature_extraction.text.CountVectorizer):
             X.sort_indices()
             return vocabulary, X
 
-    def _join_results(self, *results):
+    @staticmethod
+    def _join_results(*results):
         fixed_vocab = results[0]['fixed_vocab']
 
         vocabulary = results[0]['vocabulary']
@@ -110,21 +108,6 @@ class CountVectorizer(sklearn.feature_extraction.text.CountVectorizer):
         return vocabulary, j_indices, values, indptr
 
     def transform(self, raw_documents, n_jobs=1):
-        """Transform documents to document-term matrix.
-
-        Extract token counts out of raw text documents using the vocabulary
-        fitted with fit or the one provided to the constructor.
-
-        Parameters
-        ----------
-        raw_documents : iterable
-            An iterable which yields either str, unicode or file objects.
-
-        Returns
-        -------
-        X : sparse matrix, [n_samples, n_features]
-            Document-term matrix.
-        """
         if isinstance(raw_documents, six.string_types):
             raise ValueError(
                 "Iterable over raw text documents expected, "
@@ -147,25 +130,6 @@ class CountVectorizer(sklearn.feature_extraction.text.CountVectorizer):
         return self
 
     def fit_transform(self, raw_documents, y=None, n_jobs=1):
-        """Learn the vocabulary dictionary and return term-document matrix.
-
-        This is equivalent to fit followed by transform, but more efficiently
-        implemented.
-
-        Parameters
-        ----------
-        raw_documents : iterable
-            An iterable which yields either str, unicode or file objects.
-
-        Returns
-        -------
-        X : array, [n_samples, n_features]
-            Document-term matrix.
-        """
-        # We intentionally don't call the transform method to make
-        # fit_transform overridable without unwanted side effects in
-        # TfidfVectorizer.
-
         if isinstance(raw_documents, six.string_types):
             raise ValueError(
                 "Iterable over raw text documents expected, "
@@ -207,37 +171,11 @@ class CountVectorizer(sklearn.feature_extraction.text.CountVectorizer):
 class TfidfVectorizer(sklearn.feature_extraction.text.TfidfVectorizer, CountVectorizer):
 
     def fit(self, raw_documents, y=None, n_jobs=1):
-        """Learn vocabulary and idf from training set.
-
-        Parameters
-        ----------
-        raw_documents : iterable
-            an iterable which yields either str, unicode or file objects
-
-        Returns
-        -------
-        self : TfidfVectorizer
-        """
         X = CountVectorizer.fit_transform(self, raw_documents, n_jobs=n_jobs)
         self._tfidf.fit(X)
         return self
 
     def fit_transform(self, raw_documents, y=None, n_jobs=1):
-        """Learn vocabulary and idf, return term-document matrix.
-
-        This is equivalent to fit followed by transform, but more efficiently
-        implemented.
-
-        Parameters
-        ----------
-        raw_documents : iterable
-            an iterable which yields either str, unicode or file objects
-
-        Returns
-        -------
-        X : sparse matrix, [n_samples, n_features]
-            Tf-idf-weighted document-term matrix.
-        """
         X = CountVectorizer.fit_transform(self, raw_documents, n_jobs=n_jobs)
         self._tfidf.fit(X)
         # X is already a transformed view of raw_documents so
@@ -245,25 +183,6 @@ class TfidfVectorizer(sklearn.feature_extraction.text.TfidfVectorizer, CountVect
         return self._tfidf.transform(X, copy=False)
 
     def transform(self, raw_documents, copy=True, n_jobs=1):
-        """Transform documents to document-term matrix.
-
-        Uses the vocabulary and document frequencies (df) learned by fit (or
-        fit_transform).
-
-        Parameters
-        ----------
-        raw_documents : iterable
-            an iterable which yields either str, unicode or file objects
-
-        copy : boolean, default True
-            Whether to copy X and operate on the copy or perform in-place
-            operations.
-
-        Returns
-        -------
-        X : sparse matrix, [n_samples, n_features]
-            Tf-idf-weighted document-term matrix.
-        """
         check_is_fitted(self, '_tfidf', 'The tfidf vector is not fitted')
 
         X = CountVectorizer.transform(self, raw_documents, n_jobs=n_jobs)

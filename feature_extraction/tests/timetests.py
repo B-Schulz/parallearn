@@ -39,14 +39,27 @@ timing_sents = 10000 * cicero_sents
 print(len(timing_sents))
 
 start = datetime.now()
-_ = cv_1.fit_transform(timing_sents, None, n_jobs=3)
-_ = timeit('fit_transform Parallel', start)
-print('len vocab: {}'.format(len(cv_1.vocabulary_)))
+cv_1.fit(timing_sents, n_jobs=3)
+t = timeit('fit Parallel', start)
+emb1 = cv_1.transform(timing_sents, n_jobs=3)
+_ = timeit('transform Parallel', t)
+# emb1 = cv_1.fit_transform(timing_sents, n_jobs=3)
+# _ = timeit('fit_transform Parallel', start)
+# print('len vocab: {}'.format(len(cv_1.vocabulary_)))
+
 
 print('\n')
 start = datetime.now()
-_ = cv_2.fit_transform(timing_sents, None)
-_ = timeit('fit_transform Sing', start)
-print('len vocab: {}'.format(len(cv_2.vocabulary_)))
+cv_2.fit(timing_sents)
+t = timeit('fit Sing', start)
+emb2 = cv_2.transform(timing_sents)
+_ = timeit('transform Sing', t)
+# emb2 = cv_2.fit_transform(timing_sents)
+# _ = timeit('fit_transform Sing', start)
+# print('len vocab: {}'.format(len(cv_2.vocabulary_)))
 # print(cv_1.fit_transform(base_sents, None, n_jobs=4).todense())
+
+
+print('Vocabs equal? {}'.format(cv_2.vocabulary_ == cv_1.vocabulary_))
+print('Embeddings equal? {}'.format((emb1!=emb2).nnz==0))
 
