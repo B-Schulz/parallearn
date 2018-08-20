@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/parallearn.iml" filepath="$PROJECT_DIR$/.idea/parallearn.iml" />
+      <module fileurl="file://$USER_HOME$/anaconda3/envs/ds/lib/python3.6/site-packages/sklearn/.idea/sklearn.iml" filepath="$USER_HOME$/anaconda3/envs/ds/lib/python3.6/site-packages/sklearn/.idea/sklearn.iml" />
+    </modules>
+  </component>
+</project>
